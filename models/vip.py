@@ -17,10 +17,10 @@ def cosine(x, y):
     s1 = torch.norm(x, p=2, dim=-1)
     s2 = torch.norm(y, p=2, dim=-1)
     return torch.matmul(s1, s2.t())
-class ViPMMUnidirectional(nn.Module):
+class vipUnidirectional(nn.Module):
     def __init__(self, project_size):
         self.project_size = project_size
-        super(ViPMMUnidirectional, self).__init__()
+        super(vipUnidirectional, self).__init__()
     @staticmethod
     def global_loss(cnn_code, cnn_code_aug, rnn_code, rnn_code_aug, labels, queue, queue_im, eps=1e-8):
         T = 0.05
@@ -157,10 +157,10 @@ class ViPMMUnidirectional(nn.Module):
 
 
 
-class ViPMMBidirectional(nn.Module):
+class vipBidirectional(nn.Module):
     def __init__(self, project_size):
         self.project_size = project_size
-        super(ViPMMBidirectional, self).__init__()
+        super(vipBidirectional, self).__init__()
 
     @staticmethod
     def global_loss(cnn_code, cnn_code_aug, rnn_code, rnn_code_aug, labels, queue, queue_im, eps=1e-8):
