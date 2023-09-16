@@ -45,7 +45,7 @@ from tqdm import tqdm, trange
 from transformers import (BertConfig, BertTokenizer, WEIGHTS_NAME)
 from models.text_encoder import BertEncoder
 from models.image_encoders import InceptionV3Encoder, ResNetEncoder
-from models.vipmm import ViPMMUnidirectional, ViPMMBidirectional
+from models.vip import vipUnidirectional, vipBidirectional
 
 from utils.pretrain_config import cfg, cfg_from_file
 from utils.data import save_h5, HDF5DatasetWithImage
@@ -67,9 +67,9 @@ MODEL_CLASSES = {
     'bert': (BertConfig, BertEncoder, BertTokenizer),
 }
 
-ViPMM_CLASSES = {
-    'unidirectional': ViPMMUnidirectional,
-    'bidirectional': ViPMMBidirectional,
+vip_CLASSES = {
+    'unidirectional': vipUnidirectional,
+    'bidirectional': vipBidirectional,
 }
 
 def hinge(x):
@@ -409,7 +409,7 @@ def mask_tokens(inputs, tokenizer, args):
     return inputs, labels
 
 
-def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vipmm, config, tokenizer, tucker):
+def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vip, config, tokenizer, tucker):
     """ Train the model """
     if args.local_rank in [-1, 0]:
         tb_writer = SummaryWriter(os.path.join(cfg.OUTPUT_DIR, 'logs'))
@@ -447,11 +447,11 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
     optimizer_grouped_parameters = [
         {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)]
                    + [p for n, p in image_encoder.named_parameters() if not any(nd in n for nd in no_decay)]
-                   + [p for n, p in vipmm.named_parameters() if not any(nd in n for nd in no_decay)],
+                   + [p for n, p in vip.named_parameters() if not any(nd in n for nd in no_decay)],
          'weight_decay': args.weight_decay},
         {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)]
                    + [p for n, p in image_encoder.named_parameters() if any(nd in n for nd in no_decay)]
-                   + [p for n, p in vipmm.named_parameters() if any(nd in n for nd in no_decay)],
+                   + [p for n, p in vip.named_parameters() if any(nd in n for nd in no_decay)],
          'weight_decay': 0.0}
     ]
 
@@ -499,7 +499,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
     model.zero_grad()
     momentum_encoder.zero_grad()
     image_encoder.zero_grad()
-    vipmm.zero_grad()
+    vip.zero_grad()
     gradlist = None
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
@@ -553,7 +553,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
         for step, batch in enumerate(zip(epoch_iterator, epoch_iterator_aug)):
             model.train()
             image_encoder.train()
-            vipmm.train()
+            vip.train()
             lm_model.eval()
             momentum_resnet.eval()
             momentum_encoder.eval()
@@ -626,7 +626,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
 
 
 
-            w_loss0, w_loss1, s_loss0, s_loss1, m_loss, s_loss6, s_loss7 = vipmm(global_image_features, global_text_features,
+            w_loss0, w_loss1, s_loss0, s_loss1, m_loss, s_loss6, s_loss7 = vip(global_image_features, global_text_features,
                                                       image_features, text_features, global_image_features_aug,
                                                       global_text_features_aug, queue, queue_im,
                                                       sentence_mask=batch[2], labels=labels)
@@ -662,8 +662,8 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
             caption_loss = (pos_loss.sum() + neg_loss.sum()) / cnt
 
 
-            vipmm_loss = cfg.ViPMM.LOCAL_WEIGHT * (w_loss0 + w_loss1) \
-                        + cfg.ViPMM.GLOBAL_WEIGHT * (s_loss0 + s_loss1 + s_loss6 + s_loss7) + m_loss + cl_loss*0.04
+            vip_loss = cfg.vip.LOCAL_WEIGHT * (w_loss0 + w_loss1) \
+                        + cfg.vip.GLOBAL_WEIGHT * (s_loss0 + s_loss1 + s_loss6 + s_loss7) + m_loss + cl_loss*0.04
             queue = torch.concat([queue[:, batch_size:], global_text_features_aug.permute(1, 0)], dim=1)
             queue_im = torch.concat([queue_im[:, batch_size:], global_image_features_aug.permute(1, 0)], dim=1)
 
@@ -755,7 +755,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
                 cos_loss = cosine_loss_fct(s_hidden_states_slct, t_hidden_states_slct, target)
                 kd_loss += cfg.LWF.ALPHA_COS * cos_loss
 
-            loss = vipmm_loss + cfg.LWF.LAMBDA0 * kd_loss + swap_loss + caption_loss
+            loss = vip_loss + cfg.LWF.LAMBDA0 * kd_loss + swap_loss + caption_loss
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -812,14 +812,14 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 image_encoder.zero_grad()
-                vipmm.zero_grad()
+                vip.zero_grad()
                 global_step += 1
                 epoch_step += 1
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logs = {}
                     if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vipmm, config, tokenizer)
+                        results = evaluate(args, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vip, config, tokenizer)
                         for key, value in results.items():
                             eval_key = 'eval_{}'.format(key)
                             logs[eval_key] = value
@@ -840,7 +840,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
                             tokenizer.save_pretrained(output_dir)
                             torch.save(args, os.path.join(output_dir, 'training_args.bin'))
                             torch.save(image_encoder.state_dict(), os.path.join(output_dir, 'image_encoder.bin'))
-                            torch.save(vipmm.state_dict(), os.path.join(output_dir, 'vipmm.bin'))
+                            torch.save(vip.state_dict(), os.path.join(output_dir, 'vip.bin'))
                             logger.info("Saving best model to %s", output_dir)
 
                     loss_scalar = (tr_loss - logging_loss) / args.logging_steps
@@ -868,7 +868,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
 
                     torch.save(args, os.path.join(output_dir, 'training_args.bin'))
                     torch.save(image_encoder.state_dict(), os.path.join(output_dir, 'image_encoder.bin'))
-                    torch.save(vipmm.state_dict(), os.path.join(output_dir, 'vipmm.bin'))
+                    torch.save(vip.state_dict(), os.path.join(output_dir, 'vip.bin'))
                     logger.info("Saving model checkpoint to %s", output_dir)
 
             if 0 < args.max_steps < global_step:
@@ -884,7 +884,7 @@ def train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model
     return global_step, tr_loss / global_step
 
 
-def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resnet, vipmm, config, tokenizer, prefix=""):
+def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resnet, vip, config, tokenizer, prefix=""):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_task_names = ("mnli", "mnli-mm") if cfg.TASK_NAME == "mnli" else (cfg.TASK_NAME,)
     eval_outputs_dirs = (cfg.OUTPUT_DIR, cfg.OUTPUT_DIR + '-MM') if cfg.TASK_NAME == "mnli" else (cfg.OUTPUT_DIR,)
@@ -915,7 +915,7 @@ def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resne
         logger.info("  Num examples = %d", len(eval_dataset))
         logger.info("  Batch size = %d", args.eval_batch_size)
         eval_loss = 0.0
-        eval_vipmm_loss, eval_ce_loss, eval_cos_loss = 0.0, 0.0, 0.0
+        eval_vip_loss, eval_ce_loss, eval_cos_loss = 0.0, 0.0, 0.0
         nb_eval_steps = 0
         ce_loss_fct = nn.KLDivLoss(reduction='batchmean')
         cosine_loss_fct = nn.CosineEmbeddingLoss(reduction='mean')
@@ -930,7 +930,7 @@ def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resne
         for _, batch in enumerate(zip(epoch_iterator, epoch_iterator_aug)):
             model.eval()
             image_encoder.eval()
-            vipmm.eval()
+            vip.eval()
             lm_model.eval()
             batch = tuple(r.to(args.device) for t in batch for r in t)
             with torch.no_grad():
@@ -958,14 +958,14 @@ def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resne
                 labels = torch.LongTensor(range(batch_size))
                 labels = labels.to(args.device)
 
-                # ViPMM part
+                # vip part
 
                 image_features, global_image_features = image_encoder(**image_encoder_inputs)
                 text_outputs = model(**text_encoder_inputs)
 
                 text_features, global_text_features = text_outputs[3], text_outputs[4]
                 text_features_aug, global_text_features_aug = text_outputs_aug[3], text_outputs_aug[4]
-                w_loss0, w_loss1, s_loss0, s_loss1, m_loss, s_loss2, s_loss3 = vipmm(global_image_features,
+                w_loss0, w_loss1, s_loss0, s_loss1, m_loss, s_loss2, s_loss3 = vip(global_image_features,
                                                                                     global_text_features,
                                                                                     image_features, text_features,
                                                                                     global_image_features_aug,
@@ -974,8 +974,8 @@ def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resne
                                                                                     sentence_mask=batch[2],
                                                                                     labels=labels)
                 
-                vipmm_loss = cfg.ViPMM.LOCAL_WEIGHT * (w_loss0 + w_loss1) \
-                            + cfg.ViPMM.GLOBAL_WEIGHT * (s_loss0 + s_loss1 + s_loss2 + s_loss3) + m_loss
+                vip_loss = cfg.vip.LOCAL_WEIGHT * (w_loss0 + w_loss1) \
+                            + cfg.vip.GLOBAL_WEIGHT * (s_loss0 + s_loss1 + s_loss2 + s_loss3) + m_loss
 
                 # MLM part
                 text_encoder_inputs['input_ids'] = text_encoder_inputs['input_ids'].cpu()
@@ -1033,21 +1033,21 @@ def evaluate(args, model, image_encoder, lm_model, momentum_bert, momentum_resne
                     cos_loss = cosine_loss_fct(s_hidden_states_slct, t_hidden_states_slct, target)
                     kd_loss += cfg.LWF.ALPHA_COS * cos_loss
 
-                tmp_eval_loss = vipmm_loss + cfg.LWF.LAMBDA0 * kd_loss
+                tmp_eval_loss = vip_loss + cfg.LWF.LAMBDA0 * kd_loss
 
                 eval_loss += tmp_eval_loss.mean().item()
-                eval_vipmm_loss = 0.0
+                eval_vip_loss = 0.0
                 eval_ce_loss += ce_loss.mean().item()
                 eval_cos_loss += cos_loss.mean().item()
             nb_eval_steps += 1
 
         eval_loss = eval_loss / nb_eval_steps
-        eval_vipmm_loss = eval_vipmm_loss / nb_eval_steps
+        eval_vip_loss = eval_vip_loss / nb_eval_steps
         eval_ce_loss = eval_ce_loss / nb_eval_steps
         eval_cos_loss = eval_cos_loss / nb_eval_steps
 
         result = {'loss': eval_loss,
-                  'vipmm_loss': eval_vipmm_loss,
+                  'vip_loss': eval_vip_loss,
                   'ce_loss': eval_ce_loss,
                   'cos_loss': eval_cos_loss}
         results.update(result)
@@ -1234,9 +1234,9 @@ def main():
 
     image_encoder.to(args.device)
     # momentum_resnet.to(args.device)
-    logger.info("ViPMM type: %s", cfg.SMOOTH.TYPE)
-    vipmm = ViPMM_CLASSES[cfg.SMOOTH.TYPE](config.hidden_size)
-    vipmm.to(args.device)
+    logger.info("vip type: %s", cfg.SMOOTH.TYPE)
+    vip = vip_CLASSES[cfg.SMOOTH.TYPE](config.hidden_size)
+    vip.to(args.device)
     if args.local_rank == 0:
         torch.distributed.barrier()  # End of barrier to make sure only the first process in distributed training download model & vocab
 
@@ -1245,7 +1245,7 @@ def main():
     # Training
     if cfg.TRAIN:
         train_dataset, train_dataset_aug = load_and_cache_examples(args, cfg.TASK_NAME, tokenizer, evaluate=False)
-        global_step, tr_loss = train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vipmm, config, tokenizer, tucker)
+        global_step, tr_loss = train(args, train_dataset, train_dataset_aug, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vip, config, tokenizer, tucker)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     logger.info("Evaluation parameters %s", args)
@@ -1268,9 +1268,9 @@ def main():
             model.to(args.device)
             image_encoder.load_state_dict(torch.load(os.path.join(checkpoint, 'image_encoder.bin'),
                                                      map_location=lambda storage, loc: storage.cuda(cfg.GPU_ID)))
-            vipmm.load_state_dict(torch.load(os.path.join(checkpoint, 'vipmm.bin'),
+            vip.load_state_dict(torch.load(os.path.join(checkpoint, 'vip.bin'),
                                             map_location=lambda storage, loc: storage.cuda(cfg.GPU_ID)))
-            result = evaluate(args, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vipmm, config, tokenizer, prefix=prefix)
+            result = evaluate(args, model, image_encoder, lm_model, momentum_encoder, momentum_resnet, vip, config, tokenizer, prefix=prefix)
             result = dict((k + '_{}'.format(global_step), v) for k, v in result.items())
             results.update(result)
 
