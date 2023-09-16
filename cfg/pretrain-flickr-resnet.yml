@@ -1,0 +1,43 @@
+TASK_NAME: 'flickr'
+IMAGE_DIR: 'cv_data/flickr30k-images'
+DATA_DIR: 'flickr/'
+OUTPUT_DIR: 'vipmms/flickr-resnet'
+GPU_ID: 0
+BATCH_SIZE: 64
+GRAD_ACCUM: 8
+EPOCH: 10
+LR: 0.0001
+NUM_WORKERS: 8
+
+TRAIN: True
+EVAL: True
+
+SMOOTH:
+  GAMMA1: 5.0
+  GAMMA2: 5.0
+  GAMMA3: 10.0
+  TYPE: 'bidirectional'
+
+LWF:
+  MAX_LEN: -1
+  MODEL_TYPE: 'bert'
+  MODEL_NAME: 'bert-base-uncased'
+  CACHE_DIR: '/nlp_data/bert/'
+  LOWER_CASE: True
+  LAMBDA0: 1.0
+
+TEXT:
+  MAX_LEN: 32
+  MODEL_TYPE: 'bert'
+  MODEL_NAME: 'bert-base-uncased'
+  CACHE_DIR: '/nlp_data/bert/'
+  LOWER_CASE: True
+
+IMAGE:
+  ENCODER: 'resnet-50'
+  RESIZE_SIZE: 224
+  CROP_SIZE: 224
+
+ViPMM:
+  LOCAL_WEIGHT: 3.0
+  GLOBAL_WEIGHT: 1.0

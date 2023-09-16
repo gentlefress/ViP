@@ -1,0 +1,17 @@
+TASK_NAME: 'mini-mnli'
+DATA_DIR: 'MNLI'
+OUTPUT_DIR: 'ViPMM/unsupervised/flickr-resnet/mnli'
+GPU_ID: 0
+BATCH_SIZE: 64
+GRAD_ACCUM: 1
+EPOCH: 10
+
+TRAIN: True
+EVAL: True
+
+TEXT:
+  MAX_LEN: 32
+  LOWER_CASE: True
+  MODEL_TYPE: 'bert'
+  MODEL_NAME: 'ViPMM'
+  CACHE_DIR: None
